@@ -27,6 +27,7 @@ def test_distribution_selection():
     with pytest.raises(SDKError, match="no fetchable"):
         select_distribution(graph(), "demo")
     assert select_distribution(graph("a"), "demo").asset_id == "a"
+    assert select_distribution({"@graph": graph("a")["@graph"][1:]}, "demo").asset_id == "a"
     with pytest.raises(SDKError, match=r"a \(a.csv, text/csv\), b"):
         select_distribution(graph("a", "b"), "demo")
     assert select_distribution(graph("a", "b"), "demo", "b").asset_id == "b"
@@ -44,9 +45,9 @@ def response(status=200, payload=None, data=b""):
     return result
 
 
-@pytest.mark.parametrize("mode", ["push", "pull"])
+@pytest.mark.parametrize(("mode", "missing"), [("push", False), ("pull", False), ("push", True)])
 @mock_aws
-def test_transfer(monkeypatch, mode):
+def test_transfer(monkeypatch, mode, missing):
     from urllib.parse import urlsplit
 
     client = boto3.client("s3", region_name="us-east-1")
@@ -82,7 +83,8 @@ def test_transfer(monkeypatch, mode):
                 destination = payload["dataDestination"]
                 assert destination["method"] == "PUT"
                 key = urlsplit(destination["baseUrl"]).path.lstrip("/")
-                client.put_object(Bucket="datasets", Key=key, Body=b"x,y\n")
+                if not missing:
+                    client.put_object(Bucket="datasets", Key=key, Body=b"x,y\n")
             else:
                 assert "dataDestination" not in payload
             return response(payload={"@id": "transfer"})
@@ -98,6 +100,10 @@ def test_transfer(monkeypatch, mode):
     monkeypatch.setattr(requests, "request", fake)
     config = TransferConfig("https://catalog.example", "https://consumer.example", None, "participant",
                             mode, interval=0)
+    if missing:
+        with pytest.raises(SDKError, match="missing or unreadable"):
+            retrieve("demo", None, config, {"X-Api-Key": "credential"}, staging)
+        return
     if mode == "push":
         with ThreadPoolExecutor(max_workers=2) as pool:
             files = list(pool.map(lambda _: retrieve("demo", None, config, {"X-Api-Key": "credential"}, staging),
@@ -134,3 +140,27 @@ def test_missing_staging_object():
     client.create_bucket(Bucket="datasets")
     with pytest.raises(SDKError, match="missing or unreadable"):
         Staging(client, "datasets").verify("missing")
+
+
+def test_stack_connection_signs_provider_endpoint(monkeypatch):
+    from types import SimpleNamespace
+    from urllib.parse import parse_qs, urlsplit
+
+    from dali_mlops import storage
+
+    store = SimpleNamespace(
+        path="s3://artifacts",
+        config=SimpleNamespace(client_kwargs={"endpoint_url": "http://internal.example"}),
+        get_credentials=lambda: ("test-key", "test-secret", "session-token", "us-west-1"),
+    )
+    monkeypatch.setattr(storage, "active_artifact_store", lambda: store)
+    monkeypatch.setenv("DALI_STAGING_BUCKET", "datasets")
+    monkeypatch.setenv("DALI_STAGING_SIGN_ENDPOINT", "https://external.example")
+    staging = storage.staging_connection(push=True)
+    assert staging.client.meta.endpoint_url == "http://internal.example"
+    signed_url = urlsplit(staging.presign("dali-staging/key/file.bin", 60))
+    query = parse_qs(signed_url.query)
+    assert (signed_url.netloc, signed_url.path) == ("external.example", "/datasets/dali-staging/key/file.bin")
+    assert query["X-Amz-Algorithm"] == ["AWS4-HMAC-SHA256"]
+    assert query["X-Amz-Security-Token"] == ["session-token"]
+    assert "test-key" in query["X-Amz-Credential"][0]

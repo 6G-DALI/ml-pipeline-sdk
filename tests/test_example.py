@@ -107,3 +107,19 @@ def test_chronological_split_drops_crossing_targets():
     np.testing.assert_array_equal(train_y, np.arange(1, 7))
     np.testing.assert_array_equal(test_x[:, 0], [7, 8])
     np.testing.assert_array_equal(test_y, [8, 9])
+
+
+def test_compile_without_external_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("ZENML_CONFIG_PATH", str(tmp_path / "zenml"))
+    monkeypatch.setenv("ZENML_ANALYTICS_OPT_IN", "false")
+    monkeypatch.delenv("PIVEAU_HUB_URL", raising=False)
+    monkeypatch.delenv("EDC_PROVIDER_ID", raising=False)
+    Client._reset_instance()
+    try:
+        random_forest_pipeline.prepare(dataset_id="telemetry", dataspace_model_id=VERSION, run_name="compile-test")
+        snapshot, _, _ = random_forest_pipeline._compile()
+        assert set(snapshot.step_configurations) == {
+            "retrieve_csv", "preprocess", "train", "evaluate", "export", "save_model",
+        }
+    finally:
+        Client._reset_instance()

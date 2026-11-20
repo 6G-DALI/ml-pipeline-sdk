@@ -1,6 +1,7 @@
 """Consumer management API and Data Space transfer state machine."""
 
 from dataclasses import dataclass
+import re
 from time import monotonic, sleep
 from urllib.parse import quote
 
@@ -107,8 +108,6 @@ def retrieve(dataset_id, asset_id, config, headers, staging):
     agreement = identifier(property_value(finalized, "contractAgreementId"))
     media = distribution.media_type or property_value(entry, "contenttype")
     if media:
-        import re
-
         media = media.partition(";")[0].strip().lower()
         if not re.fullmatch(r"[\w.+-]+/[\w.+-]+", media):
             media = None

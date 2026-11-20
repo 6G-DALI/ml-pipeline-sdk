@@ -113,11 +113,8 @@ def select_distribution(document, dataset_id, asset_id=None):
         for ref in items(field(node, DCAT + "distribution", "dcat:distribution"))
     ]
     if not datasets:
-        references = [
-            node for node in nodes
-            if any(scalar(kind) in (DCAT + "Distribution", "dcat:Distribution")
-                   for kind in items(node.get("@type")))
-        ]
+        # The dataset endpoint can return a flat graph without explicit distribution links.
+        references = nodes
     distributions = {}
     for ref in references:
         node = by_id.get(scalar(ref), ref)
@@ -136,9 +133,10 @@ def select_distribution(document, dataset_id, asset_id=None):
     if not distributions:
         raise SDKError("The dataset has no fetchable connector-backed distributions.")
     if asset_id is not None:
-        if identifier(asset_id) not in distributions:
+        selected = distributions.get(identifier(asset_id))
+        if selected is None:
             raise SDKError("The requested asset does not belong to this dataset's fetchable distributions.")
-        return distributions[asset_id]
+        return selected
     if len(distributions) != 1:
         # Catalogue labels are untrusted. Exclude URL-like strings and control characters.
         def label(value):
