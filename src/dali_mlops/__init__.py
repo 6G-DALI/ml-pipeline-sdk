@@ -16,3 +16,7 @@ from .retrieval import (
 __all__ += [
     "retrieve_csv", "retrieve_dataset", "retrieve_json", "retrieve_jsonl", "retrieve_parquet", "retrieve_tsv",
 ]
+
+from .publication import save_model
+
+__all__ += ["save_model"]
