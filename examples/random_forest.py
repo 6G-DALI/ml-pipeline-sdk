@@ -6,9 +6,9 @@ import numpy as np
 import pandas as pd
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from zenml import pipeline, step
+from zenml import step
 
-from dali_mlops import ExportedModel, retrieve_csv, save_model
+from dali_mlops import ExportedModel, TrainingOutput, dali_pipeline
 from dali_mlops.onnx import export_sklearn_onnx
 
 FEATURE_NAMES = ["cpu_percent", "memory_used_mib", "pids"]
@@ -98,23 +98,19 @@ def export(model: RandomForestRegressor) -> ExportedModel:
     return export_sklearn_onnx(model, input_name="telemetry", feature_count=len(FEATURE_NAMES))
 
 
-@pipeline
+@dali_pipeline(
+    name="random_forest_pipeline", dataset="csv",
+    requirements=["scikit-learn>=1.5,<2", "skl2onnx>=1.19,<2", "onnx>=1.17,<2"],
+)
 def random_forest_pipeline(
-    dataset_id: str,
-    dataspace_model_id: str,
-    run_name: str,
-    asset_id: str | None = None,
-    experiment_name: str = "",
+    df: pd.DataFrame,
     test_size: float = 0.2,
     random_state: int = 42,
     n_estimators: int = 50,
     max_depth: int | None = 10,
     min_samples_split: int = 2,
     min_samples_leaf: int = 2,
-) -> dict:
-    df = retrieve_csv(dataset_id, asset_id)
+):
     train_x, train_y, test_x, test_y = preprocess(df, test_size)
     model = train(train_x, train_y, n_estimators, max_depth, min_samples_split, min_samples_leaf, random_state)
-    return save_model(
-        export(model), evaluate(model, test_x, test_y), dataspace_model_id, run_name, experiment_name,
-    )
+    return TrainingOutput(export(model), evaluate(model, test_x, test_y))
