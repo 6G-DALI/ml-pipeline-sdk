@@ -4,33 +4,19 @@ from contextlib import closing
 from hashlib import sha256
 import json
 import logging
-import math
-from numbers import Real
 from uuid import UUID
 
 from botocore.exceptions import ClientError
 from zenml import log_metadata, step
 
+from .config import DEFAULTS, datalake_bucket
+from .metrics import normalize_history, normalize_metrics
 from .runtime import secret_values
 from .storage import s3_client, storage_errors
 from .types import ExportedModel, SDKError
 
-BUCKET = "6g-dali-models"
+BUCKET = DEFAULTS["DLAKE_BUCKET"]
 logger = logging.getLogger(__name__)
-
-
-def normalize_metrics(metrics):
-    result = {}
-    for name, value in metrics.items():
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Metric names must be nonempty strings.")
-        name = "model-rmse" if name == "rmse" else name
-        if name in result:
-            raise ValueError("Duplicate metric name after mapping rmse to model-rmse.")
-        if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
-            raise ValueError("Metric values must be finite numbers.")
-        result[name] = float(value)
-    return result
 
 
 def model_version(value):
@@ -40,9 +26,9 @@ def model_version(value):
         raise ValueError("dataspace_model_id must be a trained model version UUID.") from None
 
 
-def verify_model(client, key, size, digest, media_type, *, existing=False):
+def verify_model(client, bucket, key, size, digest, media_type, *, existing=False):
     with storage_errors("Could not read back the model from the Data Lake. Check GET permissions and storage health."):
-        result = client.get_object(Bucket=BUCKET, Key=key)
+        result = client.get_object(Bucket=bucket, Key=key)
         with closing(result["Body"]) as stream:
             if result["ContentLength"] != size:
                 matches = False
@@ -60,7 +46,7 @@ def verify_model(client, key, size, digest, media_type, *, existing=False):
     return result.get("ContentType") or media_type
 
 
-def upload_model(client, model, version):
+def upload_model(client, model, version, bucket=BUCKET):
     key = f"{version}/{model.filename}"
     size = len(model.data)
     digest = sha256(model.data).hexdigest()
@@ -68,7 +54,7 @@ def upload_model(client, model, version):
     with storage_errors("Could not conditionally upload the model. Check the Data Lake connection and If-None-Match support."):
         try:
             client.put_object(
-                Bucket=BUCKET, Key=key, Body=model.data, ContentType=model.media_type,
+                Bucket=bucket, Key=key, Body=model.data, ContentType=model.media_type,
                 Metadata={"sha256": digest}, IfNoneMatch="*",
             )
         except ClientError as error:
@@ -78,22 +64,22 @@ def upload_model(client, model, version):
             if status != 412:
                 raise
             existing = True
-    media_type = verify_model(client, key, size, digest, model.media_type, existing=existing)
+    media_type = verify_model(client, bucket, key, size, digest, model.media_type, existing=existing)
     return {
         "dataspace_model_id": version, "filename": model.filename,
-        "datalake_uri": f"s3://{BUCKET}/{key}", "datalake_size_bytes": size,
+        "datalake_uri": f"s3://{bucket}/{key}", "datalake_size_bytes": size,
         "media_type": media_type, "sha256": digest,
     }
 
 
-def publish(client, model, metrics, dataspace_model_id, run_name, experiment_name="", metric_history=None):
+def publish(client, model, metrics, dataspace_model_id, run_name, experiment_name="", metric_history=None, bucket=BUCKET):
     version = model_version(dataspace_model_id)
     final_metrics = normalize_metrics(metrics)
-    history = [normalize_metrics(point) for point in metric_history] if metric_history is not None else None
+    history = normalize_history(metric_history) if metric_history is not None else None
     result = {
         "run_name": run_name, "experiment_name": experiment_name or None,
         "status": "SUCCESS", "metrics": final_metrics,
-        "model": upload_model(client, model, version),
+        "model": upload_model(client, model, version, bucket),
     }
     if history is not None:
         result["metrics_history"] = history
@@ -116,10 +102,13 @@ def save_model(
     dataspace_model_id: str,
     run_name: str,
     experiment_name: str = "",
-    metric_history: list[dict[str, float]] | None = None,
+    metric_history: list[dict[str, float | int]] | None = None,
 ) -> dict:
     """Publish to the central Data Lake and report the MO result."""
-    result = publish(datalake_client(), model, metrics, dataspace_model_id, run_name, experiment_name, metric_history)
+    result = publish(
+        datalake_client(), model, metrics, dataspace_model_id, run_name, experiment_name, metric_history,
+        datalake_bucket(),
+    )
     log_metadata(metadata={"api_result": result, "metrics": result["metrics"]})
     logger.info("api_result=%s", json.dumps(result, allow_nan=False))
     return result

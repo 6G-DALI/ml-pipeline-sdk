@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import re
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 
 class SDKError(RuntimeError):
@@ -51,13 +51,22 @@ class ExportedModel:
             raise ValueError("Provide a nonempty exported model as bytes.")
 
     @classmethod
-    def from_file(cls, path: str | Path, media_type: str) -> "ExportedModel":
+    def from_file(cls, path: str | Path, media_type: str = "application/onnx") -> "ExportedModel":
         path = Path(path)
         return cls(path.name, media_type, path.read_bytes())
 
     @classmethod
-    def from_bytes(cls, data: bytes, filename: str, media_type: str) -> "ExportedModel":
+    def from_bytes(cls, data: bytes, filename: str = "model.onnx", media_type: str = "application/onnx") -> "ExportedModel":
         return cls(filename, media_type, data)
 
     def open(self) -> BytesIO:
         return BytesIO(self.data)
+
+
+@dataclass(frozen=True)
+class TrainingOutput:
+    """What a pipeline body returns: the exported model, final metrics and optional per-epoch metrics."""
+
+    model: Any
+    metrics: Any
+    metric_history: Any = None

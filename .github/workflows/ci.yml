@@ -23,4 +23,4 @@ jobs:
           "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
           "$RUNNER_TEMP/wheel-env/bin/python" -m pip check
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-env/bin/python" -c 'from importlib.metadata import metadata; from dali_mlops import DatasetFile, ExportedModel, retrieve_dataset, retrieve_csv, retrieve_tsv, retrieve_parquet, retrieve_json, retrieve_jsonl, save_model; m = metadata("6g-dali-mlops"); assert (m["Name"], m["Version"], m["Requires-Python"]) == ("6g-dali-mlops", "0.1.0", "<3.13,>=3.12")'
+          "$RUNNER_TEMP/wheel-env/bin/python" -c 'from importlib.metadata import metadata; from dali_mlops import DatasetFile, ExportedModel, TrainingOutput, dali_pipeline, retrieve_dataset, retrieve_csv, retrieve_tsv, retrieve_parquet, retrieve_json, retrieve_jsonl, save_model; import dali_mlops.spec; m = metadata("6g-dali-mlops"); assert (m["Name"], m["Version"], m["Requires-Python"]) == ("6g-dali-mlops", "0.2.0", "<3.13,>=3.12")'

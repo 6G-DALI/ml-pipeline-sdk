@@ -13,10 +13,12 @@ from zenml.client import Client
 from dali_mlops import DatasetFile, retrieve_dataset
 from dali_mlops import publication, retrieval, storage
 from dali_mlops.publication import BUCKET
+from examples.epoch_mlp import epoch_mlp_pipeline
 from examples.random_forest import FEATURE_NAMES, preprocess, random_forest_pipeline
 
 FIXTURE = Path(__file__).parents[1] / "examples" / "telemetry.csv"
 VERSION = "96e968f1-f414-40d0-b4dd-8a37897edf74"
+PAYLOAD = {}
 
 
 @step
@@ -36,6 +38,8 @@ def offline_zenml(monkeypatch, tmp_path):
     monkeypatch.setenv("ZENML_ANALYTICS_OPT_IN", "false")
     monkeypatch.setenv("ZENML_ENABLE_REPO_INIT_WARNINGS", "false")
     Client._reset_instance()
+    PAYLOAD.clear()
+    PAYLOAD["data"] = FIXTURE.read_bytes()
     with mock_aws():
         staging_s3 = boto3.client("s3", region_name="us-east-1")
         staging_s3.create_bucket(Bucket="datasets")
@@ -45,7 +49,7 @@ def offline_zenml(monkeypatch, tmp_path):
 
         def staged_fixture(dataset_id, asset_id):
             key = staging.new_key("telemetry.csv")
-            staging_s3.put_object(Bucket="datasets", Key=key, Body=FIXTURE.read_bytes())
+            staging_s3.put_object(Bucket="datasets", Key=key, Body=PAYLOAD["data"])
             return DatasetFile(
                 "telemetry.csv", "text/csv", dataset_id, asset_id or "fixture", staging.uri(key),
                 "agreement", "transfer", staging.verify(key),
@@ -78,7 +82,7 @@ def test_offline_random_forest(offline_zenml):
     assert published.run_metadata["api_result"] == result
     assert result["status"] == "SUCCESS"
     assert result["run_name"] == "local-forest"
-    assert set(result["metrics"]) == {"mae", "model-rmse", "r2"}
+    assert set(result["metrics"]) == {"model-mae", "model-rmse", "model-r2"}
     assert "metrics_history" not in result
     exported = run.steps["export"].output.load()
     key = f"{VERSION}/model.onnx"
@@ -91,6 +95,19 @@ def test_offline_random_forest(offline_zenml):
     assert schema.type.tensor_type.elem_type == onnx.TensorProto.FLOAT
     assert schema.type.tensor_type.shape.dim[1].dim_value == len(FEATURE_NAMES)
     assert [obj["Key"] for obj in offline_zenml.list_objects_v2(Bucket=BUCKET)["Contents"]] == [key]
+
+
+def test_epoch_example_reports_history(offline_zenml):
+    rng = np.random.default_rng(0)
+    table = pd.DataFrame({"a": rng.random(40), "b": rng.random(40)})
+    table["target"] = table["a"] * 2 + table["b"]
+    PAYLOAD["data"] = table.to_csv(index=False).encode()
+    run = epoch_mlp_pipeline(dataset_id="numbers", dataspace_model_id=VERSION, run_name="local-epochs", epochs=3)
+    result = run.steps["save_model"].output.load()
+    assert set(result["metrics"]) == {"loss", "model-mae"}
+    assert [point["epoch"] for point in result["metrics_history"]] == [0, 1, 2]
+    assert set(result["metrics_history"][0]) == {"epoch", "loss", "model-mae"}
+    assert result["model"]["datalake_uri"] == f"s3://{BUCKET}/{VERSION}/model.onnx"
 
 
 def test_chronological_split_drops_crossing_targets():
@@ -121,5 +138,7 @@ def test_compile_without_external_configuration(monkeypatch, tmp_path):
         assert set(snapshot.step_configurations) == {
             "retrieve_csv", "preprocess", "train", "evaluate", "export", "save_model",
         }
+        parameters = snapshot.pipeline_configuration.parameters
+        assert parameters["dataset_id"] == "telemetry" and parameters["n_estimators"] == 50
     finally:
         Client._reset_instance()

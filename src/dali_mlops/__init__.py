@@ -1,22 +1,29 @@
-"""Python steps and artifact types for the 6G-DALI MLOps SDK."""
+"""Python steps and artifact types for the 6G-DALI MLOps SDK.
 
-from .types import DatasetFile, ExportedModel, SDKError
+Names are loaded on first use so that ``import dali_mlops.spec`` does not import ZenML.
+"""
 
-__all__ = ["DatasetFile", "ExportedModel", "SDKError"]
+from importlib import import_module
 
-from .retrieval import (
-    retrieve_csv,
-    retrieve_dataset,
-    retrieve_json,
-    retrieve_jsonl,
-    retrieve_parquet,
-    retrieve_tsv,
-)
+__version__ = "0.2.0"
 
-__all__ += [
-    "retrieve_csv", "retrieve_dataset", "retrieve_json", "retrieve_jsonl", "retrieve_parquet", "retrieve_tsv",
-]
+_EXPORTS = {
+    "DatasetFile": "types", "ExportedModel": "types", "SDKError": "types", "TrainingOutput": "types",
+    "retrieve_csv": "retrieval", "retrieve_dataset": "retrieval", "retrieve_json": "retrieval",
+    "retrieve_jsonl": "retrieval", "retrieve_parquet": "retrieval", "retrieve_tsv": "retrieval",
+    "save_model": "publication", "dali_pipeline": "pipeline",
+}
 
-from .publication import save_model
+__all__ = sorted(_EXPORTS) + ["__version__"]
 
-__all__ += ["save_model"]
+
+def __getattr__(name):
+    if name in _EXPORTS:
+        value = getattr(import_module(f".{_EXPORTS[name]}", __name__), name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    return sorted(set(globals()) | set(__all__))
