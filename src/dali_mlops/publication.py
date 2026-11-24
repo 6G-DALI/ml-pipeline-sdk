@@ -102,7 +102,7 @@ def save_model(
     dataspace_model_id: str,
     run_name: str,
     experiment_name: str = "",
-    metric_history: list[dict[str, float]] | None = None,
+    metric_history: list[dict[str, float | int]] | None = None,
 ) -> dict:
     """Publish to the central Data Lake and report the MO result."""
     result = publish(
