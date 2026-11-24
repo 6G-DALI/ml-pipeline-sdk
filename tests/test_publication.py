@@ -8,7 +8,8 @@ from moto import mock_aws
 import pytest
 
 from dali_mlops import ExportedModel, SDKError
-from dali_mlops.publication import BUCKET, normalize_metrics, publish
+from dali_mlops.metrics import normalize_metrics
+from dali_mlops.publication import BUCKET, publish
 
 VERSION = "2fe3980d-eac4-4f38-a0a6-8d4baa44c508"
 MODEL = ExportedModel.from_bytes(b"model data", "model.bin", "application/octet-stream")
@@ -30,7 +31,7 @@ def test_publish_concurrent_retries_and_conflict():
     assert result["experiment_name"] == "example"
     assert result["status"] == "SUCCESS"
     assert result["metrics"] == {"model-rmse": 1.0, "custom": 2.0}
-    assert result["metrics_history"] == [{"mae": 3.0}]
+    assert result["metrics_history"] == [{"model-mae": 3.0}]
     assert result["model"] == {
         "dataspace_model_id": VERSION, "filename": "model.bin",
         "datalake_uri": f"s3://{BUCKET}/{VERSION}/model.bin", "datalake_size_bytes": len(MODEL.data),

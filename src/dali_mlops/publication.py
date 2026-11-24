@@ -4,33 +4,18 @@ from contextlib import closing
 from hashlib import sha256
 import json
 import logging
-import math
-from numbers import Real
 from uuid import UUID
 
 from botocore.exceptions import ClientError
 from zenml import log_metadata, step
 
+from .metrics import normalize_history, normalize_metrics
 from .runtime import secret_values
 from .storage import s3_client, storage_errors
 from .types import ExportedModel, SDKError
 
 BUCKET = "6g-dali-models"
 logger = logging.getLogger(__name__)
-
-
-def normalize_metrics(metrics):
-    result = {}
-    for name, value in metrics.items():
-        if not isinstance(name, str) or not name.strip():
-            raise ValueError("Metric names must be nonempty strings.")
-        name = "model-rmse" if name == "rmse" else name
-        if name in result:
-            raise ValueError("Duplicate metric name after mapping rmse to model-rmse.")
-        if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value):
-            raise ValueError("Metric values must be finite numbers.")
-        result[name] = float(value)
-    return result
 
 
 def model_version(value):
@@ -89,7 +74,7 @@ def upload_model(client, model, version):
 def publish(client, model, metrics, dataspace_model_id, run_name, experiment_name="", metric_history=None):
     version = model_version(dataspace_model_id)
     final_metrics = normalize_metrics(metrics)
-    history = [normalize_metrics(point) for point in metric_history] if metric_history is not None else None
+    history = normalize_history(metric_history) if metric_history is not None else None
     result = {
         "run_name": run_name, "experiment_name": experiment_name or None,
         "status": "SUCCESS", "metrics": final_metrics,

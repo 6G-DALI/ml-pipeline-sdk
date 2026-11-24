@@ -78,7 +78,7 @@ def test_offline_random_forest(offline_zenml):
     assert published.run_metadata["api_result"] == result
     assert result["status"] == "SUCCESS"
     assert result["run_name"] == "local-forest"
-    assert set(result["metrics"]) == {"mae", "model-rmse", "r2"}
+    assert set(result["metrics"]) == {"model-mae", "model-rmse", "model-r2"}
     assert "metrics_history" not in result
     exported = run.steps["export"].output.load()
     key = f"{VERSION}/model.onnx"
