@@ -4,6 +4,7 @@ import math
 import os
 
 from .catalogue import identifier
+from .config import setting
 from .edc import TransferConfig
 from .types import SDKError
 
@@ -33,17 +34,14 @@ def positive_env(key, default, convert=float):
 
 def transfer_config():
     env = os.environ
-    for key in ("PIVEAU_HUB_URL", "EDC_PROVIDER_ID"):
-        if not env.get(key):
-            raise SDKError(f"Set {key} in the worker environment.")
     mode = env.get("DALI_TRANSFER_MODE", "push").lower()
     if mode not in ("push", "pull"):
         raise SDKError("Set DALI_TRANSFER_MODE to push or pull.")
     return TransferConfig(
-        catalogue=env["PIVEAU_HUB_URL"],
-        consumer=env.get("EDC_CONSUMER_URL"),
-        provider=env.get("EDC_PROVIDER_URL"),
-        provider_id=identifier(env["EDC_PROVIDER_ID"]),
+        catalogue=setting("PIVEAU_HUB_URL"),
+        consumer=setting("EDC_CONSUMER_URL"),
+        provider=setting("EDC_PROVIDER_URL"),
+        provider_id=identifier(setting("EDC_PROVIDER_ID")),
         mode=mode,
         timeout=positive_env("DALI_POLL_TIMEOUT", 120),
         interval=positive_env("DALI_POLL_INTERVAL", 1),
