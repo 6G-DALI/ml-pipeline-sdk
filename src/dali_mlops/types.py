@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 import re
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 
 class SDKError(RuntimeError):
@@ -61,3 +61,12 @@ class ExportedModel:
 
     def open(self) -> BytesIO:
         return BytesIO(self.data)
+
+
+@dataclass(frozen=True)
+class TrainingOutput:
+    """What a pipeline body returns: the exported model, final metrics and optional per-epoch metrics."""
+
+    model: Any
+    metrics: Any
+    metric_history: Any = None
