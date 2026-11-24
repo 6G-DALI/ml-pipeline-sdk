@@ -51,12 +51,12 @@ class ExportedModel:
             raise ValueError("Provide a nonempty exported model as bytes.")
 
     @classmethod
-    def from_file(cls, path: str | Path, media_type: str) -> "ExportedModel":
+    def from_file(cls, path: str | Path, media_type: str = "application/onnx") -> "ExportedModel":
         path = Path(path)
         return cls(path.name, media_type, path.read_bytes())
 
     @classmethod
-    def from_bytes(cls, data: bytes, filename: str, media_type: str) -> "ExportedModel":
+    def from_bytes(cls, data: bytes, filename: str = "model.onnx", media_type: str = "application/onnx") -> "ExportedModel":
         return cls(filename, media_type, data)
 
     def open(self) -> BytesIO:
