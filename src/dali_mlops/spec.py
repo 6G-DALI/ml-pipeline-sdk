@@ -5,7 +5,7 @@ so the Service Manager can vendor this single file and run it on uploaded source
 
     parse_pipeline_source(text) -> {"pipelines": [...], "errors": [...], "warnings": [...]}
 
-Each pipeline is ``{name, function, sdk, dataset_format, params, base_image, requirements,
+Each pipeline is ``{name, function, sdk, dataset_format, resumable, params, base_image, requirements,
 skip_build, environment}`` and each param is ``{name, type, required, default, reserved}``.
 """
 
@@ -14,23 +14,29 @@ import ast
 SPEC_VERSION = 1
 DATASET_FORMATS = ("csv", "tsv", "parquet", "json", "jsonl", "raw")
 # The run contract: parameters the Service Manager fills. Order: required first, then defaulted.
-# ``dataset`` marks the ones that exist only when the pipeline reads a dataset.
+# ``dataset`` marks the ones that exist only when the pipeline reads a dataset, ``resumable`` the ones
+# that exist only when the pipeline is declared with ``@dali_pipeline(resumable=True)`` (run contract v4).
 RESERVED = (
-    {"name": "dataset_id", "type": "str", "required": True, "default": None, "dataset": True},
-    {"name": "dataspace_model_id", "type": "str", "required": True, "default": None, "dataset": False},
-    {"name": "run_name", "type": "str", "required": True, "default": None, "dataset": False},
-    {"name": "asset_id", "type": "str | None", "required": False, "default": None, "dataset": True},
-    {"name": "experiment_name", "type": "str", "required": False, "default": "", "dataset": False},
+    {"name": "dataset_id", "type": "str", "required": True, "default": None, "dataset": True, "resumable": False},
+    {"name": "dataspace_model_id", "type": "str", "required": True, "default": None, "dataset": False,
+     "resumable": False},
+    {"name": "run_name", "type": "str", "required": True, "default": None, "dataset": False, "resumable": False},
+    {"name": "asset_id", "type": "str | None", "required": False, "default": None, "dataset": True,
+     "resumable": False},
+    {"name": "experiment_name", "type": "str", "required": False, "default": "", "dataset": False,
+     "resumable": False},
+    {"name": "base_model_uri", "type": "str | None", "required": False, "default": None, "dataset": False,
+     "resumable": True},
 )
 RESERVED_NAMES = frozenset(item["name"] for item in RESERVED)
 _UNKNOWN = object()
 
 
-def reserved_params(has_dataset=True):
+def reserved_params(has_dataset=True, resumable=False):
     return [
         {"name": item["name"], "type": item["type"], "required": item["required"], "default": item["default"],
          "reserved": True}
-        for item in RESERVED if has_dataset or not item["dataset"]
+        for item in RESERVED if (has_dataset or not item["dataset"]) and (resumable or not item["resumable"])
     ]
 
 
@@ -117,13 +123,12 @@ def _imports_sdk(tree):
     return False
 
 
-def _params(function, env, warnings, skip_first):
+def _params(function, env, warnings, skip):
     args = function.args
     positional = args.posonlyargs + args.args
     defaults = [None] * (len(positional) - len(args.defaults)) + list(args.defaults)
     entries = list(zip(positional, defaults)) + list(zip(args.kwonlyargs, args.kw_defaults))
-    if skip_first and entries:
-        entries = entries[1:]
+    entries = entries[skip:]
     if args.vararg or args.kwarg:
         warnings.append(f"{function.name}: *args and **kwargs are not pipeline parameters and were ignored.")
     result = []
@@ -170,7 +175,12 @@ def _pipeline(function, kind, call, env, sdk_module, warnings):
     is_sdk = kind == "dali_pipeline"
     docker = {}
     dataset_format = None
+    resumable = False
     if is_sdk:
+        resumable = kwargs.get("resumable", False)
+        if resumable is not True and resumable is not False:
+            warnings.append(f"{function.name}: resumable must be True or False.")
+            resumable = False
         dataset_format = kwargs.get("dataset", "csv")
         if dataset_format is _UNKNOWN or not (dataset_format is None or dataset_format in DATASET_FORMATS):
             warnings.append(f"{function.name}: dataset must be one of {', '.join(DATASET_FORMATS)} or None.")
@@ -189,13 +199,18 @@ def _pipeline(function, kind, call, env, sdk_module, warnings):
     if environment is not None and not isinstance(environment, dict):
         warnings.append(f"{function.name}: the environment is not a literal mapping and was not read.")
     name = kwargs.get("name")
-    own = _params(function, env, warnings, skip_first=is_sdk and dataset_format is not None)
+    skip = 0
+    if is_sdk:
+        skip = (dataset_format is not None) + resumable
+    own = _params(function, env, warnings, skip)
+    if resumable and not any(p["name"] == "base" for p in _params(function, env, [], skip - 1)[:1]):
+        warnings.append(f"{function.name}: a resumable pipeline takes 'base' right after the dataset.")
     if is_sdk:
         clash = sorted(RESERVED_NAMES.intersection(p["name"] for p in own))
         if clash:
             warnings.append(f"{function.name}: parameters {clash} are reserved and set by the platform.")
             own = [p for p in own if p["name"] not in clash]
-        params = _order(reserved_params(dataset_format is not None), own)
+        params = _order(reserved_params(dataset_format is not None, resumable), own)
     else:
         params = own
     return {
@@ -203,6 +218,7 @@ def _pipeline(function, kind, call, env, sdk_module, warnings):
         "function": function.name,
         "sdk": is_sdk or sdk_module,
         "dataset_format": dataset_format,
+        "resumable": resumable,
         "params": params,
         "base_image": base_image if isinstance(base_image, str) else None,
         "requirements": requirements if isinstance(requirements, (str, list)) else None,

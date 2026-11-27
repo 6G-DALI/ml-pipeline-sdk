@@ -47,7 +47,8 @@ def test_v01_example():
     assert params["dataset_id"] == {"name": "dataset_id", "type": "str", "required": True, "default": None, "reserved": True}
     assert params["asset_id"]["type"] == "str | None" and params["asset_id"]["default"] is None
     assert params["max_depth"] == {"name": "max_depth", "type": "int | None", "required": False, "default": 10, "reserved": False}
-    assert {n for n, p in params.items() if p["reserved"]} == RESERVED_NAMES
+    assert {n for n, p in params.items() if p["reserved"]} == RESERVED_NAMES - {"base_model_uri"}
+    assert pipeline["resumable"] is False
 
 
 def test_mo_team_pipeline():
@@ -177,3 +178,47 @@ def test_code_is_never_executed(tmp_path):
 def test_result_is_json_serialisable():
     for name in ("v01_random_forest.py", "mo_team_sdk_pipeline.py", "pre_sdk_pipeline.py"):
         json.dumps(parse(name))
+
+
+def test_resumable_pipeline_takes_base_and_gets_base_model_uri():
+    pipeline = only(parse_pipeline_source("""
+from dali_mlops import dali_pipeline
+
+@dali_pipeline(resumable=True)
+def p(df, base, extra_trees: int = 50): pass
+"""))
+    assert pipeline["resumable"] is True
+    assert names(pipeline) == RESERVED_ORDER + ["base_model_uri", "extra_trees"]
+    assert by_name(pipeline)["base_model_uri"] == {
+        "name": "base_model_uri", "type": "str | None", "required": False, "default": None, "reserved": True}
+
+
+def test_resumable_without_a_dataset_skips_base_only():
+    pipeline = only(parse_pipeline_source("@dali_pipeline(dataset=None, resumable=True)\ndef p(base, k: int = 1): pass"))
+    assert names(pipeline) == ["dataspace_model_id", "run_name", "experiment_name", "base_model_uri", "k"]
+
+
+def test_non_resumable_pipelines_have_no_base_model_uri():
+    for source in ("@dali_pipeline\ndef p(df, base, k: int = 1): pass",
+                   "@dali_pipeline(resumable=False)\ndef p(df, k: int = 1): pass"):
+        pipeline = only(parse_pipeline_source(source))
+        assert pipeline["resumable"] is False and "base_model_uri" not in names(pipeline)
+
+
+def test_resumable_warnings():
+    result = parse_pipeline_source("@dali_pipeline(resumable=True)\ndef p(df, k: int = 1): pass")
+    assert "'base'" in result["warnings"][0]
+    result = parse_pipeline_source("@dali_pipeline(resumable=flag)\ndef p(df, k: int = 1): pass")
+    assert only(result)["resumable"] is False and "resumable must be" in result["warnings"][0]
+
+
+def test_plain_pipelines_are_never_resumable():
+    assert only(parse("pre_sdk_pipeline.py"))["resumable"] is False
+
+
+def test_reserved_declaration_carries_the_resumable_flag():
+    from dali_mlops.spec import RESERVED, reserved_params
+
+    assert [item["name"] for item in RESERVED if item["resumable"]] == ["base_model_uri"]
+    assert [p["name"] for p in reserved_params(True, True)][-1] == "base_model_uri"
+    assert [p["name"] for p in reserved_params(True)] == RESERVED_ORDER
