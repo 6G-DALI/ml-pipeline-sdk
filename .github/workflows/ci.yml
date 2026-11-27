@@ -12,7 +12,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: python -m pip install -e '.[example,test,release]'
+      - run: python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - run: python -m pip install -e '.[example,test,release,torch]'
       - run: python -m pip check
       - run: python -m pytest -q
       - run: python -m build
@@ -23,4 +24,4 @@ jobs:
           "$RUNNER_TEMP/wheel-env/bin/python" -m pip install dist/*.whl
           "$RUNNER_TEMP/wheel-env/bin/python" -m pip check
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/wheel-env/bin/python" -c 'from importlib.metadata import metadata; from dali_mlops import DatasetFile, ExportedModel, TrainingOutput, dali_pipeline, retrieve_dataset, retrieve_csv, retrieve_tsv, retrieve_parquet, retrieve_json, retrieve_jsonl, save_model; import dali_mlops.spec; m = metadata("6g-dali-mlops"); assert (m["Name"], m["Version"], m["Requires-Python"]) == ("6g-dali-mlops", "0.2.0", "<3.13,>=3.12")'
+          "$RUNNER_TEMP/wheel-env/bin/python" -c 'from importlib.metadata import metadata; from dali_mlops import DatasetFile, ExportedModel, TrainingOutput, dali_pipeline, retrieve_dataset, retrieve_csv, retrieve_tsv, retrieve_parquet, retrieve_json, retrieve_jsonl, save_model, Checkpoint, dump_joblib, load_joblib, dump_torch_state, load_torch_state; import dali_mlops.spec; m = metadata("6g-dali-mlops"); assert (m["Name"], m["Version"], m["Requires-Python"]) == ("6g-dali-mlops", "0.3.0", "<3.13,>=3.12")'

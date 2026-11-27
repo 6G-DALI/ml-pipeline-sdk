@@ -5,7 +5,7 @@ Names are loaded on first use so that ``import dali_mlops.spec`` does not import
 
 from importlib import import_module
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 _EXPORTS = {
     "Checkpoint": "types", "DatasetFile": "types", "ExportedModel": "types", "SDKError": "types", "TrainingOutput": "types",
