@@ -5,7 +5,7 @@ import pytest
 from zenml import pipeline, step
 from zenml.client import Client
 
-from dali_mlops import TrainingOutput, dali_pipeline
+from dali_mlops import Checkpoint, TrainingOutput, dali_pipeline
 from dali_mlops.pipeline import docker_settings, unpack
 from dali_mlops.spec import parse_pipeline_source
 
@@ -35,6 +35,16 @@ def forest(df, n: int = 3, label: str = "y"):
 @dali_pipeline(name="Named", dataset=None, base_image="img:1", environment={"EDC_PROVIDER_ID": "other"})
 def no_data(epochs: int, lr: float = 0.1):
     return make_model(), {"mae": 1.0}
+
+
+@dali_pipeline(resumable=True)
+def resumable_forest(df, base: Checkpoint | None = None, n: int = 3, extra: int = 5):
+    return TrainingOutput(df, {"mae": 1.0}, checkpoint=Checkpoint.from_bytes(b"x"))
+
+
+@dali_pipeline(dataset=None, resumable=True)
+def resumable_no_data(base: Checkpoint | None = None, epochs: int = 1):
+    return TrainingOutput(1, {}, checkpoint=Checkpoint.from_bytes(b"x"))
 
 
 def parameters(pipe):
@@ -69,7 +79,7 @@ def test_signature_matches_the_static_spec():
 
 def test_epoch_example_spec():
     spec = parse_pipeline_source((ROOT / "examples" / "epoch_mlp.py").read_text())["pipelines"][0]
-    assert [p["name"] for p in spec["params"]] == RESERVED_ORDER + ["target", "epochs", "learning_rate"]
+    assert [p["name"] for p in spec["params"]] == RESERVED_ORDER + ["base_model_uri", "target", "epochs", "learning_rate"]
     assert spec["sdk"] and spec["dataset_format"] == "csv" and spec["requirements"]
 
 
@@ -158,3 +168,106 @@ def test_a_plain_zenml_pipeline_still_works(offline):
         pass
 
     assert [p.name for p in parameters(plain)] == ["x"]
+
+
+def test_resumable_signature_adds_base_model_uri_and_hides_base():
+    params = parameters(resumable_forest)
+    assert [p.name for p in params] == RESERVED_ORDER + ["base_model_uri", "n", "extra"]
+    uri = params[5]
+    assert uri.annotation == str | None and uri.default is None
+    assert [p.name for p in parameters(resumable_no_data)] == [
+        "dataspace_model_id", "run_name", "experiment_name", "base_model_uri", "epochs"]
+
+
+def test_resumable_signature_matches_the_static_spec():
+    source = (ROOT / "examples" / "random_forest.py").read_text()
+    spec = parse_pipeline_source(source)["pipelines"][0]
+    from examples.random_forest import random_forest_pipeline as imported
+
+    assert spec["resumable"] is True
+    assert [p.name for p in parameters(imported)] == [p["name"] for p in spec["params"]]
+    assert "base_model_uri" in [p["name"] for p in spec["params"]] and "base" not in [p["name"] for p in spec["params"]]
+    assert [p.default is inspect.Parameter.empty for p in parameters(imported)] == [p["required"] for p in spec["params"]]
+    mlp = parse_pipeline_source((ROOT / "examples" / "epoch_mlp.py").read_text())["pipelines"][0]
+    assert mlp["resumable"] is True and mlp["params"][-4]["name"] == "base_model_uri"
+
+
+def test_a_resumable_pipeline_compiles_with_the_base_step():
+    resumable_forest.prepare(
+        dataset_id="d", dataspace_model_id="9d1b6f5e-3c47-4c3a-8d86-6b2f1f0a7e10", run_name="r",
+        base_model_uri="s3://6g-dali-models/9d1b6f5e-3c47-4c3a-8d86-6b2f1f0a7e10/checkpoint.joblib",
+    )
+    snapshot, _, _ = resumable_forest._compile()
+    assert set(snapshot.step_configurations) == {"retrieve_csv", "load_base_checkpoint", "save_model"}
+    assert snapshot.pipeline_configuration.parameters["base_model_uri"].endswith("checkpoint.joblib")
+    assert "base" not in snapshot.pipeline_configuration.parameters
+
+
+def test_pipelines_written_for_0_2_0_are_unchanged():
+    # no resumable flag: no base_model_uri, no base step, the old result shape and the old function call
+    assert "base_model_uri" not in [p.name for p in parameters(forest)]
+    forest.prepare(dataset_id="d", dataspace_model_id="9d1b6f5e-3c47-4c3a-8d86-6b2f1f0a7e10", run_name="r")
+    snapshot, _, _ = forest._compile()
+    assert set(snapshot.step_configurations) == {"retrieve_csv", "save_model"}
+    assert [p.name for p in parameters(forest)] == RESERVED_ORDER + ["n", "label"]
+
+    @dali_pipeline
+    def plain(df, base: int = 1):
+        return df, {}
+
+    assert [p.name for p in parameters(plain)] == RESERVED_ORDER + ["base"]
+
+
+@pytest.mark.parametrize("make", [
+    lambda: dali_pipeline(resumable=True)(lambda df: None),
+    lambda: dali_pipeline(resumable=True)(lambda df, other=None: None),
+    lambda: dali_pipeline(resumable=True)(lambda df, base=None: None),
+    lambda: dali_pipeline(resumable=True)(_base_required),
+    lambda: dali_pipeline(resumable=True)(_base_str),
+    lambda: dali_pipeline(resumable=True)(_base_wrong_default),
+    lambda: dali_pipeline(resumable=True)(_base_after_param),
+    lambda: dali_pipeline(resumable=True)(_declares_base_model_uri),
+    lambda: dali_pipeline(dataset=None, resumable=True)(lambda: None),
+])
+def test_invalid_resumable_declarations(make):
+    with pytest.raises(TypeError):
+        make()
+
+
+def _base_required(df, base: Checkpoint | None):
+    pass
+
+
+def _base_str(df, base: str | None = None):
+    pass
+
+
+def _base_wrong_default(df, base: Checkpoint | None = 1):
+    pass
+
+
+def _base_after_param(df, n: int = 1, base: Checkpoint | None = None):
+    pass
+
+
+def _declares_base_model_uri(df, base: Checkpoint | None = None, base_model_uri: str | None = None):
+    pass
+
+
+def test_a_plain_pipeline_cannot_declare_base_model_uri():
+    with pytest.raises(TypeError, match="reserved"):
+        dali_pipeline(lambda df, base_model_uri=None: None)
+
+
+def test_unpack_resumable():
+    checkpoint = Checkpoint.from_bytes(b"x")
+    assert unpack(TrainingOutput("m", {"a": 1}, [1], checkpoint), True) == ("m", {"a": 1}, [1], checkpoint)
+    assert unpack(("m", {"a": 1}, [1], checkpoint), True) == ("m", {"a": 1}, [1], checkpoint)
+    assert unpack(("m", {"a": 1}, None, checkpoint), True)[3] is checkpoint
+    for bad in (TrainingOutput("m", {}), ("m", {}), ("m", {}, None), "m", None):
+        with pytest.raises(TypeError, match="checkpoint"):
+            unpack(bad, True)
+    # a four-tuple is a resumable-only shape; the checkpoint of a plain pipeline is ignored
+    with pytest.raises(TypeError):
+        unpack(("m", {}, None, checkpoint))
+    assert unpack(TrainingOutput("m", {}, None, checkpoint)) == ("m", {}, None)

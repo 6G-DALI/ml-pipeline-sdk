@@ -12,10 +12,11 @@ def main():
     parser.add_argument("--dataspace-model-id", required=True)
     parser.add_argument("--run-name", required=True)
     parser.add_argument("--experiment-name", default="")
+    parser.add_argument("--base-model-uri", help="s3:// URI of a base version's checkpoint to resume from")
     args = parser.parse_args()
     random_forest_pipeline.with_options(run_name=args.run_name)(
         dataset_id=args.dataset_id, asset_id=args.asset_id, dataspace_model_id=args.dataspace_model_id,
-        run_name=args.run_name, experiment_name=args.experiment_name,
+        run_name=args.run_name, experiment_name=args.experiment_name, base_model_uri=args.base_model_uri,
     )
 
 

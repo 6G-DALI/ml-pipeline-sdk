@@ -1,4 +1,8 @@
-"""Forecast the next observed container CPU percentage from telemetry."""
+"""Forecast the next observed container CPU percentage from telemetry.
+
+Resumable: with a base version the forest grows by ``extra_trees`` trees fitted on the new data
+(``warm_start``), the trees of the base are kept as they are. Without a base it is trained from scratch.
+"""
 
 from typing import Annotated
 
@@ -8,7 +12,7 @@ from sklearn.ensemble import RandomForestRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from zenml import step
 
-from dali_mlops import ExportedModel, TrainingOutput, dali_pipeline
+from dali_mlops import Checkpoint, ExportedModel, SDKError, TrainingOutput, dali_pipeline, dump_joblib, load_joblib
 from dali_mlops.onnx import export_sklearn_onnx
 
 FEATURE_NAMES = ["cpu_percent", "memory_used_mib", "pids"]
@@ -73,14 +77,28 @@ def preprocess(
 
 @step
 def train(
-    train_x: np.ndarray, train_y: np.ndarray, n_estimators: int, max_depth: int | None,
-    min_samples_split: int, min_samples_leaf: int, random_state: int,
-) -> RandomForestRegressor:
-    model = RandomForestRegressor(
-        n_estimators=n_estimators, max_depth=max_depth, min_samples_split=min_samples_split,
-        min_samples_leaf=min_samples_leaf, random_state=random_state, n_jobs=-1,
-    )
-    return model.fit(train_x, train_y)
+    train_x: np.ndarray, train_y: np.ndarray, base: Checkpoint | None, n_estimators: int, extra_trees: int,
+    max_depth: int | None, min_samples_split: int, min_samples_leaf: int, random_state: int,
+) -> tuple[Annotated[RandomForestRegressor, "model"], Annotated[Checkpoint, "checkpoint"]]:
+    if base is None:
+        model = RandomForestRegressor(
+            n_estimators=n_estimators, max_depth=max_depth, min_samples_split=min_samples_split,
+            min_samples_leaf=min_samples_leaf, random_state=random_state, n_jobs=-1,
+        )
+    else:
+        model = load_joblib(base)
+        if not isinstance(model, RandomForestRegressor):
+            raise SDKError("The base checkpoint is not a random forest regressor from this pipeline.")
+        if model.n_features_in_ != train_x.shape[1]:
+            raise SDKError(
+                f"The base model was trained on {model.n_features_in_} features but the new dataset "
+                f"provides {train_x.shape[1]}. Choose a dataset with the same schema or start from scratch."
+            )
+        if extra_trees < 1:
+            raise ValueError("extra_trees must be at least one to resume from a base version.")
+        model.set_params(warm_start=True, n_estimators=model.n_estimators + extra_trees, n_jobs=-1)
+    model.fit(train_x, train_y)
+    return model, dump_joblib(model)
 
 
 @step
@@ -99,18 +117,22 @@ def export(model: RandomForestRegressor) -> ExportedModel:
 
 
 @dali_pipeline(
-    name="random_forest_pipeline", dataset="csv",
+    name="random_forest_pipeline", dataset="csv", resumable=True,
     requirements=["scikit-learn>=1.5,<2", "skl2onnx>=1.19,<2", "onnx>=1.17,<2"],
 )
 def random_forest_pipeline(
     df: pd.DataFrame,
+    base: Checkpoint | None = None,
     test_size: float = 0.2,
     random_state: int = 42,
     n_estimators: int = 50,
+    extra_trees: int = 50,
     max_depth: int | None = 10,
     min_samples_split: int = 2,
     min_samples_leaf: int = 2,
 ):
     train_x, train_y, test_x, test_y = preprocess(df, test_size)
-    model = train(train_x, train_y, n_estimators, max_depth, min_samples_split, min_samples_leaf, random_state)
-    return TrainingOutput(export(model), evaluate(model, test_x, test_y))
+    model, checkpoint = train(
+        train_x, train_y, base, n_estimators, extra_trees, max_depth, min_samples_split, min_samples_leaf, random_state,
+    )
+    return TrainingOutput(export(model), evaluate(model, test_x, test_y), checkpoint=checkpoint)

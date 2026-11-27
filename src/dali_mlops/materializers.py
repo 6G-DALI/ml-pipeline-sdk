@@ -38,16 +38,24 @@ class ExportedModelMaterializer(BaseMaterializer):
 
 
 class CheckpointMaterializer(BaseMaterializer):
-    ASSOCIATED_TYPES = (Checkpoint,)
+    """Stores a Checkpoint, or None for a run that starts from scratch."""
 
-    def save(self, data: Checkpoint) -> None:
+    ASSOCIATED_TYPES = (Checkpoint, type(None))
+
+    def save(self, data: Checkpoint | None) -> None:
+        if data is None:
+            with self.artifact_store.open(f"{self.uri}/checkpoint.json", "w") as stream:
+                json.dump(None, stream)
+            return
         with self.artifact_store.open(f"{self.uri}/payload.bin", "wb") as stream:
             stream.write(data.data)
         with self.artifact_store.open(f"{self.uri}/checkpoint.json", "w") as stream:
             json.dump({"filename": data.filename, "media_type": data.media_type}, stream)
 
-    def load(self, data_type: type[Checkpoint]) -> Checkpoint:
+    def load(self, data_type: type) -> Checkpoint | None:
         with self.artifact_store.open(f"{self.uri}/checkpoint.json", "r") as stream:
             metadata = json.load(stream)
+        if metadata is None:
+            return None
         with self.artifact_store.open(f"{self.uri}/payload.bin", "rb") as stream:
-            return data_type(data=stream.read(), **metadata)
+            return Checkpoint(data=stream.read(), **metadata)
