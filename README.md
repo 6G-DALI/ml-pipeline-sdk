@@ -5,7 +5,7 @@ the trained model to the Data Lake and reports metrics in the Data Space vocabul
 (SM) chooses the dataset, the trained model version UUID and the run name, and the Meta-Orchestrator (MO)
 runs the pipeline on the selected ZenML stack.
 
-The distribution is `6g-dali-mlops` and imports as `dali_mlops`. Version 0.2 targets ZenML 0.94.6 (the
+The distribution is `6g-dali-mlops` and imports as `dali_mlops`. Version 0.3 targets ZenML 0.94.6 (the
 MO server version), Python 3.12.
 
 ## Install
@@ -50,6 +50,7 @@ def linear_pipeline(table: pd.DataFrame, target: str = "target"):
 | `requirements` | List of requirements, or a path to a requirements file |
 | `environment` | Overrides for the Data Space settings below, as a dict |
 | `enable_cache` | Default `False` |
+| `resumable` | Default `False`. `True` lets a run start from a previous version, see [Resume from a previous version](#resume-from-a-previous-version) |
 
 What the decorator does:
 
@@ -99,6 +100,7 @@ The SM fills the reserved parameters. The author never does.
 | `dataspace_model_id` | UUID of the future trained version | The model is written to `<uuid>/<filename>` with `If-None-Match: *` |
 | `run_name` | SM process id | Also the MO run name |
 | `experiment_name` | Training request name | Optional, default `""` |
+| `base_model_uri` | `s3://` URI of the base version's checkpoint, else omitted (`None`) | Only for `resumable=True` pipelines (run contract v4) |
 | hyperparameters | `training_config.hyperparameters` | Only the names the pipeline declares |
 
 Signature order: required reserved parameters, required author parameters, then the defaulted ones.
@@ -126,6 +128,15 @@ The MO serves it unchanged at `GET /runs/{run}/results`.
 }
 ```
 
+Resumable pipelines add two keys. `checkpoint` has the same keys as `model` (`datalake_uri` is
+`s3://<bucket>/<dataspace_model_id>/<filename>`) and `base_model_uri` is the checkpoint the run started from,
+`null` for a run from scratch.
+
+```json
+  "checkpoint": {"dataspace_model_id": "96e968f1-...", "filename": "checkpoint.joblib", "datalake_uri": "s3://6g-dali-models/96e968f1-.../checkpoint.joblib", "datalake_size_bytes": 123456, "media_type": "application/octet-stream", "sha256": "..."},
+  "base_model_uri": "s3://6g-dali-models/<base uuid>/checkpoint.joblib"
+```
+
 `metrics_history` appears only when the pipeline returns a history: one dict per epoch, with an integer
 `epoch`. `experiment_name` is `null` when empty. The consumer checks that `datalake_uri` is
 `s3://<bucket>/<dataspace_model_id>/<filename>`.
@@ -145,6 +156,46 @@ error. Values must be finite numbers.
 | `r2` | `model-r2` |
 | `latency_ms`, `inference_latency_ms` | `inference-latency-ms` |
 | `model_size_mb` | `model-size-mb` |
+
+## Resume from a previous version
+
+A *resumable* pipeline can start from the checkpoint of an earlier trained version of the same model entry
+(fine-tuning, re-training on new data). The platform shows a "Start from" choice when it starts such a
+pipeline and publishes the result as a new version derived from the base.
+
+```python
+@dali_pipeline(dataset="csv", resumable=True, requirements=["scikit-learn>=1.5,<2", "skl2onnx>=1.19,<2"])
+def forest(df: pd.DataFrame, base: Checkpoint | None = None, extra_trees: int = 50):
+    model, checkpoint = train(df, base, extra_trees)          # steps; `base` is None for a run from scratch
+    return TrainingOutput(export(model), evaluate(model, df), checkpoint=checkpoint)
+```
+
+- The function takes `base: Checkpoint | None = None` right after the dataset (first, with `dataset=None`).
+  `Checkpoint(filename, media_type, data)` holds bytes in a format you choose.
+- The decorator adds the reserved parameter `base_model_uri` (`str | None`), downloads the object from the
+  Data Lake with the `datalake-model-storage` secret, checks its size and the `sha256` metadata and passes the
+  `Checkpoint` to your function. Any failure raises an `SDKError` with a clear sentence. The URI must be
+  `s3://<bucket>/<version uuid>/<file>` in the configured Data Lake bucket.
+- The function must return a checkpoint: `TrainingOutput(model, metrics, metric_history=None, checkpoint=...)`
+  or the tuple `(model, metrics, metric_history, checkpoint)`. Without it a `TypeError` is raised.
+- Helpers in `dali_mlops`: `dump_joblib(obj, filename="checkpoint.joblib")`, `load_joblib(checkpoint)`,
+  `dump_torch_state(state_dict, filename="checkpoint.pt")` and
+  `load_torch_state(checkpoint, map_location="cpu")` (tensors and plain containers only). Libraries are
+  imported when a helper runs. A failed load says the checkpoint could not be loaded with the packages of this
+  run: pin the same `requirements` in the pipeline that wrote it.
+- Publication order is checkpoint, then the ONNX model, then the result. The checkpoint is written to
+  `<uuid>/<filename>` next to the model, with the same conditional put and read-back verification. Its file
+  name without extension must differ from the model's, because the platform derives asset ids from it.
+  A checkpoint above 500 MiB logs a warning.
+- Check the base against the new dataset in your own code (for example the feature count) and fail with a
+  readable error. `examples/random_forest.py` grows the forest with `extra_trees` trees using `warm_start`.
+  `examples/epoch_mlp.py` keeps a torch `state_dict` and continues the epoch numbering.
+- Pipelines written for 0.2.0 do not change. They get no `base_model_uri`, no base download and the same
+  result shape.
+
+Security: loading a joblib or pickle checkpoint runs code, so only checkpoints the platform hands over are
+loaded, after the SHA-256 check. The checkpoint is a Data Space distribution of the model record and is
+downloadable by anyone with access to the record. Do not keep secrets in it.
 
 ## Configuration
 
@@ -186,6 +237,8 @@ Identical retries succeed and different bytes at the same key raise a conflict.
 | `export_sklearn_onnx(model, input_name=, feature_count=)` | `ExportedModel`, `model.onnx` |
 | `export_torch_onnx(model, example_input)` (`torch` extra) | `ExportedModel`, dynamic batch axis |
 | `ExportedModel.from_file(path)`, `.from_bytes(data)` | any format, default `model.onnx`, `application/onnx` |
+| `Checkpoint.from_file(path)`, `.from_bytes(data)` | any format, default `checkpoint.bin`, `application/octet-stream` |
+| `dump_joblib`, `load_joblib`, `dump_torch_state`, `load_torch_state` | checkpoint helpers |
 
 `ExportedModel` holds the bytes in memory and publication is a single PUT. Choose a size that fits the worker
 and the storage service.
@@ -200,7 +253,7 @@ from dali_mlops.spec import parse_pipeline_source
 
 parse_pipeline_source(text)
 # {"pipelines": [{"name", "function", "sdk", "dataset_format",
-#                 "params": [{"name", "type", "required", "default", "reserved"}],
+#                 "resumable", "params": [{"name", "type", "required", "default", "reserved"}],
 #                 "base_image", "requirements", "skip_build", "environment"}],
 #  "errors": [str], "warnings": [str]}
 ```
@@ -212,8 +265,9 @@ run contract.
 
 ## Examples
 
-`examples/random_forest.py` forecasts the next CPU percentage per container from telemetry, and
-`examples/epoch_mlp.py` reports per-epoch metrics. Both need only their ML logic. Run them locally against a
+`examples/random_forest.py` forecasts the next CPU percentage per container from telemetry (resumable with
+`extra_trees` and `warm_start`), and `examples/epoch_mlp.py` is a torch network with per-epoch metrics and a
+`state_dict` checkpoint (needs the `torch` extra). Both need only their ML logic. Run them locally against a
 mocked Data Space and in-memory S3:
 
 ```bash
@@ -221,7 +275,11 @@ python -m pytest -q tests/test_example.py
 ```
 
 On a real stack, log in, activate the stack and run `python -m examples.run --dataset-id ... --dataspace-model-id
-<fresh uuid> --run-name ...`.
+<fresh uuid> --run-name ... [--base-model-uri s3://.../checkpoint.joblib]`.
+
+## Migration from 0.2
+
+Nothing to do. `resumable` is opt-in. Install the `torch` extra to run the torch example's tests.
 
 ## Migration from 0.1
 
