@@ -64,9 +64,40 @@ class ExportedModel:
 
 
 @dataclass(frozen=True)
+class Checkpoint:
+    """Training state a later run can resume from: bytes in a format the author chooses."""
+
+    filename: str
+    media_type: str = "application/octet-stream"
+    data: bytes = b""
+
+    def __post_init__(self) -> None:
+        safe_filename(self.filename)
+        if not re.fullmatch(r"[\w.+-]+/[\w.+-]+", self.media_type):
+            raise ValueError("Provide a MIME media type such as application/octet-stream.")
+        if not isinstance(self.data, bytes) or not self.data:
+            raise ValueError("Provide a nonempty checkpoint as bytes.")
+
+    @classmethod
+    def from_file(cls, path: str | Path, media_type: str = "application/octet-stream") -> "Checkpoint":
+        path = Path(path)
+        return cls(path.name, media_type, path.read_bytes())
+
+    @classmethod
+    def from_bytes(
+        cls, data: bytes, filename: str = "checkpoint.bin", media_type: str = "application/octet-stream",
+    ) -> "Checkpoint":
+        return cls(filename, media_type, data)
+
+    def open(self) -> BytesIO:
+        return BytesIO(self.data)
+
+
+@dataclass(frozen=True)
 class TrainingOutput:
     """What a pipeline body returns: the exported model, final metrics and optional per-epoch metrics."""
 
     model: Any
     metrics: Any
     metric_history: Any = None
+    checkpoint: Any = None
